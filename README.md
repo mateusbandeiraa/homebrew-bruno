@@ -12,11 +12,17 @@ and publishes it as a cask, so `brew upgrade` tracks upstream releases.
 
 ```sh
 brew tap mateusbandeiraa/bruno
-brew install --cask --no-quarantine bruno-source
+brew trust mateusbandeiraa/bruno
+brew install --cask bruno-source
 ```
 
-`--no-quarantine` is required: the app is ad-hoc signed rather than signed with
-an Apple Developer ID, and Gatekeeper refuses a quarantined copy of such a build.
+`brew trust` is required from Homebrew 7 onwards, which refuses to load casks
+from untrusted third-party taps.
+
+The app is ad-hoc signed rather than signed with an Apple Developer ID, and
+Gatekeeper refuses a quarantined copy of such a build. Homebrew 7 removed
+`--no-quarantine` and always quarantines cask artifacts, so the cask clears the
+attribute itself in a `postflight` block — on upgrades as well as first install.
 
 ## Upgrade
 

@@ -15,15 +15,23 @@ cask "bruno-source" do
 
   app "Bruno.app"
 
-  # The app is ad-hoc signed rather than signed with a Developer ID, so a
-  # quarantined copy is refused by Gatekeeper. Install with --no-quarantine.
+  # The app is ad-hoc signed rather than signed with a Developer ID, so
+  # Gatekeeper refuses a quarantined copy. Homebrew 7 removed --no-quarantine
+  # and always quarantines cask artifacts, so clear the attribute here instead;
+  # this runs on upgrades as well as the first install.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Bruno.app"],
+                   sudo: false
+  end
+
   caveats <<~EOS
     This is an unofficial build compiled from Bruno's MIT-licensed source.
     It is not affiliated with or endorsed by the Bruno project, and it does
     not include any feature of Bruno's commercial editions.
 
-    It is ad-hoc signed, so it must be installed without quarantine:
-      brew install --cask --no-quarantine bruno-source
+    The app is ad-hoc signed; the cask clears its quarantine attribute on
+    install and upgrade so Gatekeeper allows it to launch.
   EOS
 
   zap trash: [
