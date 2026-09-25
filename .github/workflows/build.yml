@@ -1,0 +1,188 @@
+name: Build upstream release
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to build (default: latest)'
+        required: false
+      force:
+        description: 'Rebuild even if the cask is already at that version'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      needed: ${{ steps.resolve.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve upstream tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_TAG:-}" ]]; then
+            tag="$INPUT_TAG"
+          else
+            # Release tags only (vX.Y.Z), newest first by semver.
+            tag=$(gh api repos/usebruno/bruno/tags --paginate --jq '.[].name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)
+          fi
+          [[ -n "$tag" ]] || { echo "could not resolve an upstream tag" >&2; exit 1; }
+
+          version="${tag#v}"
+          current=$(grep -oE 'version "[^"]+"' Casks/bruno-source.rb | head -1 | cut -d'"' -f2 || echo "")
+
+          if [[ "$current" == "$version" && "${FORCE:-false}" != "true" ]]; then
+            needed=false
+          else
+            needed=true
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "needed=$needed"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "upstream=$tag cask=$current build=$needed"
+
+  build:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: macos-14
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+
+      - name: Checkout Bruno ${{ needs.check.outputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: usebruno/bruno
+          ref: ${{ needs.check.outputs.tag }}
+          path: bruno
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Stamp version
+        working-directory: bruno
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # Upstream ships a placeholder version in package.json and does not
+          # inject the real one at release time, so a source build would report
+          # 2.0.0 in the status bar, User-Agent and export metadata.
+          node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            for (const pkg of ["packages/bruno-app/package.json", "packages/bruno-electron/package.json"]) {
+              const json = JSON.parse(fs.readFileSync(pkg, "utf8"));
+              json.version = version;
+              fs.writeFileSync(pkg, JSON.stringify(json, null, 2) + "\n");
+            }
+          ' "$VERSION"
+
+      - name: Install dependencies
+        working-directory: bruno
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build shared packages and renderer
+        working-directory: bruno
+        run: |
+          npm run setup
+          npm run build:web
+
+      - name: Stage renderer into electron package
+        working-directory: bruno
+        run: |
+          # Mirrors scripts/build-electron.sh: absolute /static/ paths have to
+          # become relative for the file:// origin the packaged app loads from.
+          rm -rf packages/bruno-electron/out packages/bruno-electron/web
+          mkdir -p packages/bruno-electron/web
+          cp -r packages/bruno-app/dist/* packages/bruno-electron/web/
+          sed -i'' -e 's@/static/@static/@g' packages/bruno-electron/web/**.html
+          sed -i'' -e 's@/static/font@../../static/font@g' packages/bruno-electron/web/static/css/**.**.css
+          find packages/bruno-electron/web -name '*.map' -type f -delete
+
+      - name: Package app
+        working-directory: bruno/packages/bruno-electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          # identity=null: the repo config references upstream's signing cert.
+          # afterSign=null: notarize.js always runs and calls Apple notarization
+          # with upstream's team ID and credentials.
+          npx electron-builder --mac dir --arm64 \
+            --config electron-builder-config.js \
+            -c.mac.identity=null \
+            -c.mac.notarize=false \
+            -c.mac.hardenedRuntime=false \
+            -c.afterSign=null
+
+      - name: Ad-hoc sign and zip
+        id: package
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          app="bruno/packages/bruno-electron/out/mac-arm64/Bruno.app"
+          [[ -d "$app" ]] || { echo "build produced no app at $app" >&2; exit 1; }
+
+          codesign --force --deep --sign - "$app"
+
+          # ditto preserves the bundle's symlinks and resource forks; `zip` does not.
+          asset="Bruno-${VERSION}-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$asset"
+
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$asset" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          ASSET: ${{ steps.package.outputs.asset }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" "$ASSET" \
+            --title "Bruno $VERSION (unofficial source build)" \
+            --notes "Unofficial build of [usebruno/bruno@$TAG](https://github.com/usebruno/bruno/releases/tag/$TAG), compiled from MIT-licensed source. Not affiliated with or endorsed by the Bruno project. Ad-hoc signed — install with \`--no-quarantine\`."
+
+      - name: Update cask
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          sed -i'' -e "s/version \"[^\"]*\"/version \"$VERSION\"/" Casks/bruno-source.rb
+          sed -i'' -e "s/sha256 \"[^\"]*\"/sha256 \"$SHA256\"/" Casks/bruno-source.rb
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Casks/bruno-source.rb
+          git diff --staged --quiet || git commit -m "Update bruno-source to $VERSION"
+          git push
