@@ -1,6 +1,6 @@
 cask "bruno-source" do
-  version "0.0.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "4.2.0"
+  sha256 "e5f10bf92bd00967ea14ae316b88242af4b9bcfcb8f2470da9593f789c371fa7"
 
   url "https://github.com/mateusbandeiraa/homebrew-bruno/releases/download/v#{version}/Bruno-#{version}-arm64.zip",
       verified: "github.com/mateusbandeiraa/homebrew-bruno/"
