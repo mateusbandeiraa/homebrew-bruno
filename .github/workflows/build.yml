@@ -130,15 +130,18 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
+          # The config's afterSign hook always runs and calls Apple notarization
+          # with upstream's team ID. It cannot be disabled from the CLI: passing
+          # -c.afterSign=null hands electron-builder the string "null", which it
+          # then tries to resolve as a module path. Neutralise the hook instead.
+          echo 'module.exports = async () => {};' > notarize.js
+
           # identity=null: the repo config references upstream's signing cert.
-          # afterSign=null: notarize.js always runs and calls Apple notarization
-          # with upstream's team ID and credentials.
           npx electron-builder --mac dir --arm64 \
             --config electron-builder-config.js \
             -c.mac.identity=null \
             -c.mac.notarize=false \
-            -c.mac.hardenedRuntime=false \
-            -c.afterSign=null
+            -c.mac.hardenedRuntime=false
 
       - name: Ad-hoc sign and zip
         id: package
