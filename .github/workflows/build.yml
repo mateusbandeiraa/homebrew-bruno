@@ -28,7 +28,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       needed: ${{ steps.resolve.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve upstream tag
         id: resolve
@@ -72,16 +72,16 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Checkout tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Checkout Bruno ${{ needs.check.outputs.tag }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: usebruno/bruno
           ref: ${{ needs.check.outputs.tag }}
           path: bruno
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
